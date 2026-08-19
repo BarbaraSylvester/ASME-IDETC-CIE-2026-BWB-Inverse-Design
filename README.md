@@ -1,104 +1,123 @@
-# BWB Inverse Design — Setup & Run Instructions
+# AI-Driven BWB Inverse Design
 
-Plain Python 3. No GPU needed. Everything here runs on a laptop.
+**ASME IDETC/CIE 2026 Student Hackathon — nTop × MIT DeCoDE Lab Challenge**
 
-## 1. Install Python
+An automated inverse design pipeline that takes a Blended Wing Body (BWB)
+aircraft's mission profile (target L/D, payload/fuel volume minimums,
+flight condition) and directly outputs both the optimal external planform
+geometry and internal structural configuration — without running any new
+CFD or FEA, built entirely on the organizers' provided dataset and
+aerodynamics surrogate.
 
-If you don't already have Python 3.10+ installed:
+**Author(s):** Barbara Sylvester (The Tarleton Texans)
 
-- **Windows/Mac:** download from https://www.python.org/downloads/ (check
-  "Add Python to PATH" during install on Windows)
-- Confirm it worked by opening a terminal (Command Prompt / PowerPoint /
-  Terminal.app) and running:
-  ```
-  python3 --version
-  ```
-  (on Windows it may just be `python --version`)
+\---
 
-**Recommended editor:** [VS Code](https://code.visualstudio.com/) with the
-Python extension — free, lightweight, and lets you run/debug these scripts
-with one click. Not required though; any terminal works fine.
+## Overview
 
-## 2. Set up the project
+Modern aircraft design faces a "lock-in trap": teams either iterate fast
+with low-fidelity tools and get cartoonish results, or use high-fidelity
+tools that are too slow to explore more than one design. This project
+addresses that by treating the problem as **surrogate-driven optimization**
+rather than physics simulation:
 
-Unzip the project folder, then in a terminal:
+1. Train fast machine-learning surrogates (mass, payload volume, fuel
+volume, structural feasibility) on the organizers' 13,720-design
+finite-element dataset.
+2. Use the organizers' own trained neural-network surrogate for
+aerodynamics (L/D).
+3. Run a global, gradient-free optimizer (differential evolution) on top
+of these surrogates to search the full 21-variable design space for
+each mission profile.
+
+This makes each full mission's inverse design a matter of minutes, not
+days — while still respecting a hard 335 MPa structural safety limit.
+
+## Why this matters: the hard constraint problem
+
+The organizers validate submitted designs against their own **hidden**
+ground-truth analysis — a submission has no way to self-check against the
+real answer. A design that actually exceeds the 335 MPa stress limit
+scores **zero** for that entire test case, no matter how good everything
+else about it is. This shaped the core methodology decision in this
+project: feasibility is checked with **two independent, conservative
+criteria that must both pass** — a trained classifier's confidence (≥0.92)
+*and* a separately trained regressor's point estimate (≤300 MPa, a real
+margin below the stated 335 MPa limit) — rather than trusting a single
+model's best guess. See `technical\_summary.pdf` for the full reasoning.
+
+## Repository structure
+
+```
+├── train\_surrogates.py          # trains mass/volume/stress/feasibility models
+├── inverse\_design.py            # main optimizer — run this to reproduce results
+├── pareto\_front.py              # mass-vs-L/D trade-off sweep
+├── requirements.txt
+├── data/
+│   └── bwb\_structures\_dataset.csv     # organizers' provided FE dataset (13,720 designs)
+├── models/
+│   └── ld\_surrogate/                  # organizers' provided L/D neural network + physics
+├── results/
+│   ├── optimal\_designs.csv            # final optimized design, all 3 test cases
+│   ├── optimal\_designs.json
+│   └── pareto\_front.png
+├── technical\_summary.pdf        # 3-page engineering report (methodology + trade-offs)
+└── presentation/
+    └── ASME\_BWB\_Presentation.pptx     # Round 1 slides
+```
+
+## Setup
+
+Plain Python 3.10+, no GPU required.
 
 ```bash
-cd bwb_project/inverse_design
+git clone <this-repo-url>
+cd <this-repo>
 
-# (optional but recommended) create a virtual environment so these
-# packages don't clash with anything else on your system
 python3 -m venv venv
-source venv/bin/activate        # on Windows: venv\Scripts\activate
+source venv/bin/activate        # Windows: venv\\Scripts\\activate
 
-# install dependencies
 pip install -r requirements.txt
 ```
 
-## 3. Run the pipeline, in order
+## Running the pipeline
 
-**Step 1 — train the surrogate models** (takes ~10 seconds, only needs to be
-run once; it saves `surrogates.joblib`):
+Run in this exact order — each step depends on the previous one's output.
+
 ```bash
-python3 train_surrogates.py
-```
-You should see R² scores printed for mass, payload volume, fuel volume, and
-the stress model, plus feasibility classifier accuracy.
-
-**Step 2 — run the inverse design optimizer** on all three official test
-cases (takes a few minutes; slower machines will take longer since this runs
-hundreds of surrogate evaluations per mission):
-```bash
-python3 inverse_design.py
-```
-This prints progress per mission case and saves `optimal_designs.csv` and
-`optimal_designs.json` — the final submission-format output.
-
-**Step 3 — generate the Pareto front plot** (mass vs. L/D trade-off,
-optional but recommended for the write-up):
-```bash
-python3 pareto_front.py
-```
-Saves `pareto_front.png`.
-
-## 4. Tuning for a better final result
-
-The default settings (`maxiter=40, popsize=15` in `inverse_design.py`) were
-chosen to run reasonably fast on a constrained sandbox. If you have a normal
-laptop and some time, you'll get a better-converged result by increasing
-these — open `inverse_design.py` and change the defaults in
-`optimize_for_mission()`, e.g.:
-
-```python
-def optimize_for_mission(mission, seed=42, maxiter=150, popsize=25, workers=1):
+python3 train\_surrogates.py   # \~10-30s — trains and saves surrogates.joblib
+python3 inverse\_design.py     # several minutes — runs the optimizer, saves results/optimal\_designs.csv
+python3 pareto\_front.py       # several minutes — saves results/pareto\_front.png
 ```
 
-If your machine has multiple CPU cores, you can also set `workers=-1` in the
-call to `differential_evolution` to parallelize across all of them (this
-sandbox only had 1 core available, which is why it defaults to `workers=1`).
+Expect to see, at each step:
 
-## 5. File guide
+* `train\_surrogates.py`: R² scores for mass/payload/fuel (should be >0.97),
+and a feasibility classifier accuracy (\~0.85–0.90). The raw-units R² for
+stress will look poor/near-zero — that's expected, not a bug (see
+`technical\_summary.pdf`, the stress target is trained in log-space).
+* `inverse\_design.py`: mass, L/D, volumes, and feasibility status printed
+per mission case, then written to `results/optimal\_designs.csv`.
 
-| File | What it does |
-|---|---|
-| `train_surrogates.py` | Trains mass/volume/stress models + feasibility classifier from the provided dataset |
-| `inverse_design.py` | The core inverse-design optimizer; run this to reproduce the main results |
-| `pareto_front.py` | Sweeps the L/D-weight parameter to build the mass-vs-L/D trade-off plot |
-| `surrogates.joblib` | The trained models (regenerated by `train_surrogates.py`) |
-| `optimal_designs.csv` / `.json` | Final results — one optimized design per mission case |
-| `pareto_front.png` | Mass vs. L/D trade-off visualization |
-| `PROJECT_SUMMARY.md` | Full write-up: what was built, why, and the reasoning behind each decision |
+## Methodology summary
 
-## 6. Dependencies used
+|Component|Method|Why|
+|-|-|-|
+|Mass / payload / fuel volume surrogates|Gradient-boosted trees (`HistGradientBoostingRegressor`)|Strong, fast, no-GPU baseline for tabular data|
+|Stress surrogate|Same, trained on log10(stress)|Raw stress is extremely right-skewed; log-transform fixes a broken fit|
+|Feasibility gate|Dedicated classifier + conservative dual-check|Submitted designs can't be self-validated — false "feasible" is the costly error|
+|Aerodynamics (L/D)|Organizers' provided trained MLP surrogate|Not allowed to run our own CFD|
+|Optimizer|`scipy.optimize.differential\_evolution`|Gradient-free, handles the mixed continuous/integer 21-variable space|
 
-```
-numpy
-pandas
-scikit-learn
-scipy
-joblib
-matplotlib
-```
+## Results
 
-All open-source, all pure CPU. No API keys, no external services required —
-everything runs fully offline once installed.
+See `results/optimal\_designs.csv` for the full 21-parameter design per
+mission case, and `technical\_summary.pdf` for the mass-vs-L/D Pareto
+trade-off analysis and full discussion.
+
+## Acknowledgments
+
+Dataset, L/D surrogate, and challenge design provided by nTop and the MIT
+DeCoDE Lab for the ASME IDETC/CIE 2026 Student Hackathon. See the original
+challenge repository: https://github.com/nicksungg/nTop---ASME-IDETC-CIE-Student-Hackathon
+
