@@ -191,6 +191,22 @@ def _objective(x, mission):
 
 def optimize_for_mission(mission, seed=42, maxiter=150, popsize=25, workers=1):
     bounds_list = [BOUNDS[v] for v in DESIGN_VARS]
+
+    # Print progress every 10 generations so a long run doesn't look frozen --
+    # differential_evolution otherwise prints NOTHING until it's fully done,
+    # which for a 150-generation run can be 10+ minutes of silence.
+    import time
+    t0 = time.time()
+
+    def _progress_callback(xk, convergence):
+        gen = _progress_callback.gen
+        _progress_callback.gen += 1
+        if gen % 10 == 0:
+            elapsed = time.time() - t0
+            print(f"    ... generation {gen}/{maxiter}, convergence={convergence:.4f}, elapsed={elapsed:.0f}s")
+        return False  # False = don't stop early
+    _progress_callback.gen = 0
+
     result = differential_evolution(
         _objective,
         bounds_list,
@@ -204,7 +220,9 @@ def optimize_for_mission(mission, seed=42, maxiter=150, popsize=25, workers=1):
         polish=True,
         workers=workers,        # >1 needs the surrogates to be re-loaded per worker; keep 1 unless profiled
         updating="immediate" if workers == 1 else "deferred",
+        callback=_progress_callback,
     )
+    print(f"    done in {time.time()-t0:.0f}s")
     details = evaluate_design(result.x, mission, return_details=True)
     return details
 
